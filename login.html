@@ -1,0 +1,429 @@
+<!-- login.html - VERSIÓN CORREGIDA PARA IPHONE -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login WebAuthn</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        #loginForm {
+            margin-bottom: 20px;
+        }
+        input {
+            padding: 12px;
+            width: 100%;
+            margin-bottom: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            padding: 12px 20px;
+            width: 100%;
+            cursor: pointer;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #5568d3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #status {
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+            background: #f0f0f0;
+            display: none;
+        }
+        #status.show {
+            display: block;
+        }
+        .error {
+            background: #ffebee !important;
+            color: #c62828 !important;
+        }
+        .success {
+            background: #e8f5e9 !important;
+            color: #2e7d32 !important;
+        }
+        .info {
+            background: #e3f2fd !important;
+            color: #1565c0 !important;
+        }
+        #debugInfo {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            display: none;
+        }
+        #debugInfo.show {
+            display: block;
+        }
+        .link {
+            text-align: center;
+            margin-top: 20px;
+        }
+        .link a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .link a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Iniciar Sesión</h1>
+        <p class="subtitle">Usa tu huella digital o Face ID</p>
+        
+        <form id="loginForm">
+            <input type="text" id="username" placeholder="Nombre de usuario" required autocomplete="username webauthn">
+            <button type="submit" id="loginBtn">Iniciar Sesión</button>
+        </form>
+        
+        <div id="status"></div>
+        <div id="debugInfo"></div>
+        
+        <div class="link">
+            <a href="register.html">¿No tienes cuenta? Regístrate aquí</a>
+        </div>
+    </div>
+
+    <script>
+        const bufferDecode = (value) => {
+            return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+        };
+
+        const bufferEncode = (value) => {
+            return btoa(String.fromCharCode.apply(null, new Uint8Array(value)))
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=/g, '');
+        };
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = type + ' show';
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        function showDebug(title, data) {
+            const debugDiv = document.getElementById('debugInfo');
+            debugDiv.classList.add('show');
+            
+            const entry = document.createElement('div');
+            entry.style.marginBottom = '10px';
+            entry.style.borderBottom = '1px solid #ddd';
+            entry.style.paddingBottom = '10px';
+            
+            const titleEl = document.createElement('strong');
+            titleEl.textContent = title + ':';
+            entry.appendChild(titleEl);
+            
+            const dataEl = document.createElement('pre');
+            dataEl.style.whiteSpace = 'pre-wrap';
+            dataEl.style.wordBreak = 'break-all';
+            dataEl.textContent = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+            entry.appendChild(dataEl);
+            
+            debugDiv.appendChild(entry);
+        }
+
+        function clearDebug() {
+            const debugDiv = document.getElementById('debugInfo');
+            debugDiv.innerHTML = '<strong>📋 Log de depuración:</strong><br><br>';
+        }
+
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            clearDebug();
+            const loginBtn = document.getElementById('loginBtn');
+            loginBtn.disabled = true;
+            
+            const username = document.getElementById('username').value.trim();
+            
+            if (!username) {
+                showStatus('Por favor ingresa tu nombre de usuario', 'error');
+                loginBtn.disabled = false;
+                return;
+            }
+            
+            try {
+                // ===== PASO 1: Obtener opciones del servidor =====
+                showStatus('📡 Obteniendo opciones del servidor...', 'info');
+                showDebug('Username enviado', username);
+                
+                const optionsResponse = await fetch('login_options.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `username=${encodeURIComponent(username)}`
+                });
+                
+                const optionsText = await optionsResponse.text();
+                showDebug('Respuesta cruda (options)', optionsText.substring(0, 500));
+                
+                let optionsData;
+                try {
+                    optionsData = JSON.parse(optionsText);
+                    showDebug('Options parseado', optionsData);
+                } catch (parseError) {
+                    showStatus('❌ Error: El servidor no devolvió JSON válido', 'error');
+                    showDebug('Error parseando options', parseError.message);
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                if (optionsData.error) {
+                    showStatus('❌ Error: ' + optionsData.error, 'error');
+                    if (optionsData.debug) {
+                        showDebug('Debug del servidor', optionsData.debug.join('\n'));
+                    }
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                if (!optionsData.success || !optionsData.options) {
+                    showStatus('❌ Error: Respuesta del servidor incompleta', 'error');
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                const options = optionsData.options;
+                
+                // ===== VERIFICACIÓN CRÍTICA PARA IPHONE =====
+                showDebug('✓ Opciones recibidas del servidor', {
+                    hasChallenge: !!options.challenge,
+                    hasRpId: !!options.rpId,
+                    rpId: options.rpId,
+                    timeout: options.timeout,
+                    userVerification: options.userVerification,
+                    allowCredentialsCount: options.allowCredentials ? options.allowCredentials.length : 0
+                });
+                
+                // Verificar que tengamos allowCredentials
+                if (!options.allowCredentials || options.allowCredentials.length === 0) {
+                    showStatus('⚠️ No hay credenciales registradas desde este dispositivo', 'error');
+                    showDebug('PROBLEMA', '¿Te registraste desde este iPhone? Las credenciales son específicas del dispositivo.');
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                showDebug('✓ Credenciales encontradas', {
+                    cantidad: options.allowCredentials.length,
+                    credenciales: options.allowCredentials.map((c, i) => ({
+                        numero: i + 1,
+                        tipo: c.type,
+                        idLength: c.id.length,
+                        transports: c.transports
+                    }))
+                });
+                
+                // ===== PASO 2: Preparar opciones para WebAuthn =====
+                showStatus('🔧 Preparando autenticación...', 'info');
+                
+                try {
+                    // Decodificar challenge
+                    options.challenge = bufferDecode(options.challenge);
+                    showDebug('✓ Challenge decodificado', {
+                        length: options.challenge.length,
+                        primerosBytesHex: Array.from(options.challenge.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+                    });
+                    
+                    // Convertir allowCredentials
+                    const originalAllowCreds = [...options.allowCredentials];
+                    options.allowCredentials = options.allowCredentials.map((cred, index) => {
+                        const decoded = bufferDecode(cred.id);
+                        showDebug(`✓ Credencial #${index + 1} decodificada`, {
+                            idOriginalLength: cred.id.length,
+                            idDecodedLength: decoded.length,
+                            primerosBytesHex: Array.from(decoded.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+                        });
+                        
+                        return {
+                            type: cred.type,
+                            id: decoded,
+                            transports: cred.transports || ['internal'] // Asegurar 'internal' para Face ID
+                        };
+                    });
+                    
+                } catch (decodeError) {
+                    showStatus('❌ Error decodificando datos', 'error');
+                    showDebug('Error en decodificación', decodeError.message);
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                // ===== CONFIGURACIÓN FINAL PARA IPHONE =====
+                const publicKeyCredentialRequestOptions = {
+                    challenge: options.challenge,
+                    rpId: options.rpId,
+                    allowCredentials: options.allowCredentials,
+                    userVerification: options.userVerification || 'preferred',
+                    timeout: options.timeout || 120000
+                };
+                
+                showDebug('✓ Opciones finales para navigator.credentials.get()', {
+                    challengeLength: publicKeyCredentialRequestOptions.challenge.length,
+                    rpId: publicKeyCredentialRequestOptions.rpId,
+                    allowCredentialsCount: publicKeyCredentialRequestOptions.allowCredentials.length,
+                    userVerification: publicKeyCredentialRequestOptions.userVerification,
+                    timeout: publicKeyCredentialRequestOptions.timeout,
+                    transportsUsados: publicKeyCredentialRequestOptions.allowCredentials.map(c => c.transports).flat()
+                });
+                
+                // ===== PASO 3: LLAMADA CRÍTICA - Obtener credencial =====
+                showStatus('🔐 Solicitando Face ID...', 'info');
+                showDebug('⏳ Esperando Face ID', 'Se debería mostrar el diálogo de Face ID AHORA');
+                
+                let credential;
+                try {
+                    if (!navigator.credentials || !navigator.credentials.get) {
+                        throw new Error('WebAuthn no está soportado en este navegador');
+                    }
+                    
+                    // LLAMADA CRÍTICA
+                    credential = await navigator.credentials.get({
+                        publicKey: publicKeyCredentialRequestOptions
+                    });
+                    
+                    showDebug('✅ Credencial obtenida exitosamente', {
+                        id: credential.id.substring(0, 50) + '...',
+                        type: credential.type,
+                        rawIdLength: credential.rawId.byteLength
+                    });
+                    
+                } catch (credentialError) {
+                    showStatus('❌ Error de autenticación: ' + credentialError.message, 'error');
+                    showDebug('Error de WebAuthn', {
+                        name: credentialError.name,
+                        message: credentialError.message,
+                        stack: credentialError.stack
+                    });
+                    
+                    if (credentialError.name === 'NotAllowedError') {
+                        showStatus('❌ Autenticación cancelada, tiempo agotado, o credencial no encontrada en este dispositivo', 'error');
+                    } else if (credentialError.name === 'InvalidStateError') {
+                        showStatus('❌ Las credenciales no están disponibles en este dispositivo', 'error');
+                    }
+                    
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                // ===== PASO 4: Preparar datos para enviar =====
+                showStatus('📦 Verificando credenciales...', 'info');
+                
+                const credentialData = {
+                    id: credential.id,
+                    rawId: bufferEncode(credential.rawId),
+                    type: credential.type,
+                    response: {
+                        authenticatorData: bufferEncode(credential.response.authenticatorData),
+                        clientDataJSON: bufferEncode(credential.response.clientDataJSON),
+                        signature: bufferEncode(credential.response.signature),
+                        userHandle: credential.response.userHandle ? bufferEncode(credential.response.userHandle) : null
+                    }
+                };
+                
+                showDebug('Datos preparados', {
+                    id: credentialData.id.substring(0, 50) + '...'
+                });
+                
+                // ===== PASO 5: Enviar al servidor =====
+                showStatus('📤 Enviando al servidor...', 'info');
+                
+                const verifyResponse = await fetch('login_verify.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(credentialData)
+                });
+                
+                const verifyText = await verifyResponse.text();
+                showDebug('Respuesta cruda (verify)', verifyText.substring(0, 1000));
+                
+                let result;
+                try {
+                    result = JSON.parse(verifyText);
+                    showDebug('Resultado parseado', result);
+                } catch (parseError) {
+                    showStatus('❌ Error: El servidor no devolvió JSON válido', 'error');
+                    showDebug('Error parseando verify', parseError.message);
+                    loginBtn.disabled = false;
+                    return;
+                }
+                
+                if (result.debug) {
+                    showDebug('Debug del servidor', result.debug.join('\n'));
+                }
+                
+                // ===== PASO 6: Procesar resultado =====
+                if (result.success) {
+                    showStatus('✅ ¡Login exitoso! Redirigiendo...', 'success');
+                    
+                    setTimeout(() => {
+                        window.location.href = result.redirect || 'dashboard.php';
+                    }, 1500);
+                } else {
+                    showStatus('❌ Error: ' + (result.error || 'Error desconocido'), 'error');
+                    loginBtn.disabled = false;
+                }
+                
+            } catch (error) {
+                showStatus('❌ Error: ' + error.message, 'error');
+                showDebug('Error general', {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                });
+                console.error('Error completo:', error);
+                loginBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

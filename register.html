@@ -1,0 +1,331 @@
+<!-- register.html -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registro WebAuthn</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        #registerForm {
+            margin-bottom: 20px;
+        }
+        input {
+            padding: 10px;
+            width: 300px;
+            margin-right: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        #status {
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+            background: #f0f0f0;
+        }
+        .error {
+            background: #ffebee !important;
+            color: #c62828 !important;
+        }
+        .success {
+            background: #e8f5e9 !important;
+            color: #2e7d32 !important;
+        }
+        .info {
+            background: #e3f2fd !important;
+            color: #1565c0 !important;
+        }
+        #debugInfo {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            display: none;
+        }
+        #debugInfo.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Registro con WebAuthn</h1>
+    <p>Registra tu cuenta usando tu huella digital, Face ID, o llave de seguridad.</p>
+    
+    <form id="registerForm">
+        <input type="text" id="username" placeholder="Nombre de usuario" required>
+        <button type="submit">Registrar</button>
+    </form>
+    
+    <div id="status"></div>
+    <div id="debugInfo"></div>
+
+    <script>
+        // Funciones auxiliares para convertir entre ArrayBuffer y Base64
+        const bufferDecode = (value) => {
+            // Decodificar de base64 a Uint8Array
+            return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+        };
+
+        const bufferEncode = (value) => {
+            // Codificar de ArrayBuffer a base64
+            return btoa(String.fromCharCode.apply(null, new Uint8Array(value)))
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=/g, '');
+        };
+
+        // Función para mostrar mensajes en pantalla
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = type;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        // Función para mostrar información de debug
+        function showDebug(title, data) {
+            const debugDiv = document.getElementById('debugInfo');
+            debugDiv.classList.add('show');
+            
+            const entry = document.createElement('div');
+            entry.style.marginBottom = '10px';
+            entry.style.borderBottom = '1px solid #ddd';
+            entry.style.paddingBottom = '10px';
+            
+            const titleEl = document.createElement('strong');
+            titleEl.textContent = title + ':';
+            entry.appendChild(titleEl);
+            
+            const dataEl = document.createElement('pre');
+            dataEl.style.whiteSpace = 'pre-wrap';
+            dataEl.style.wordBreak = 'break-all';
+            dataEl.textContent = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+            entry.appendChild(dataEl);
+            
+            debugDiv.appendChild(entry);
+        }
+
+        // Limpiar debug info
+        function clearDebug() {
+            const debugDiv = document.getElementById('debugInfo');
+            debugDiv.innerHTML = '<strong>📋 Log de depuración:</strong><br><br>';
+        }
+
+        document.getElementById('registerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            clearDebug();
+            
+            const username = document.getElementById('username').value.trim();
+            
+            if (!username) {
+                showStatus('Por favor ingresa un nombre de usuario', 'error');
+                return;
+            }
+            
+            try {
+                // ===== PASO 1: Obtener opciones del servidor =====
+                showStatus('📡 Obteniendo opciones del servidor...', 'info');
+                showDebug('Username enviado', username);
+                
+                const optionsResponse = await fetch('register_options.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `username=${encodeURIComponent(username)}`
+                });
+                
+                showDebug('Status de respuesta (options)', {
+                    status: optionsResponse.status,
+                    statusText: optionsResponse.statusText,
+                    ok: optionsResponse.ok
+                });
+                
+                // Leer respuesta como texto primero
+                const optionsText = await optionsResponse.text();
+                showDebug('Respuesta cruda (options)', optionsText.substring(0, 500) + (optionsText.length > 500 ? '...' : ''));
+                
+                // Intentar parsear JSON
+                let options;
+                try {
+                    options = JSON.parse(optionsText);
+                    showDebug('Options parseado', options);
+                } catch (parseError) {
+                    showStatus('❌ Error: El servidor no devolvió JSON válido', 'error');
+                    showDebug('Error parseando options', parseError.message);
+                    throw new Error('Respuesta del servidor no es JSON válido: ' + parseError.message);
+                }
+                
+                // Verificar si hay error en la respuesta
+                if (options.error) {
+                    showStatus('❌ Error del servidor: ' + options.error, 'error');
+                    return;
+                }
+                
+                // Verificar que tengamos los campos necesarios
+                if (!options.challenge || !options.user || !options.rp) {
+                    showStatus('❌ Error: Respuesta del servidor incompleta', 'error');
+                    showDebug('Campos faltantes', {
+                        hasChallenge: !!options.challenge,
+                        hasUser: !!options.user,
+                        hasRp: !!options.rp
+                    });
+                    return;
+                }
+                
+                // ===== PASO 2: Preparar opciones para WebAuthn =====
+                showStatus('🔧 Preparando credenciales...', 'info');
+                
+                try {
+                    options.challenge = bufferDecode(options.challenge);
+                    options.user.id = bufferDecode(options.user.id);
+                    
+                    showDebug('Challenge decodificado', {
+                        length: options.challenge.length,
+                        firstBytes: Array.from(options.challenge.slice(0, 10))
+                    });
+                    
+                    showDebug('User ID decodificado', {
+                        length: options.user.id.length,
+                        firstBytes: Array.from(options.user.id.slice(0, 10))
+                    });
+                } catch (decodeError) {
+                    showStatus('❌ Error decodificando datos', 'error');
+                    showDebug('Error en decodificación', decodeError.message);
+                    throw decodeError;
+                }
+                
+                // ===== PASO 3: Crear credencial con WebAuthn =====
+                showStatus('🔐 Creando credencial (usa tu dispositivo de autenticación)...', 'info');
+                
+                let credential;
+                try {
+                    // Verificar que WebAuthn esté disponible
+                    if (!navigator.credentials || !navigator.credentials.create) {
+                        throw new Error('WebAuthn no está soportado en este navegador');
+                    }
+                    
+                    showDebug('Llamando a navigator.credentials.create', 'Esperando interacción del usuario...');
+                    
+                    credential = await navigator.credentials.create({
+                        publicKey: options
+                    });
+                    
+                    showDebug('Credencial creada', {
+                        id: credential.id.substring(0, 50) + '...',
+                        type: credential.type,
+                        rawIdLength: credential.rawId.byteLength
+                    });
+                    
+                } catch (credentialError) {
+                    showStatus('❌ Error creando credencial: ' + credentialError.message, 'error');
+                    showDebug('Error de WebAuthn', {
+                        name: credentialError.name,
+                        message: credentialError.message,
+                        code: credentialError.code
+                    });
+                    
+                    // Mensajes de error más amigables
+                    if (credentialError.name === 'NotAllowedError') {
+                        showStatus('❌ Operación cancelada o tiempo agotado. Inténtalo de nuevo.', 'error');
+                    } else if (credentialError.name === 'InvalidStateError') {
+                        showStatus('❌ Esta credencial ya existe en este dispositivo.', 'error');
+                    } else if (credentialError.name === 'NotSupportedError') {
+                        showStatus('❌ Tu navegador no soporta este tipo de autenticación.', 'error');
+                    }
+                    
+                    throw credentialError;
+                }
+                
+                // ===== PASO 4: Preparar datos para enviar =====
+                showStatus('📦 Preparando datos para el servidor...', 'info');
+                
+                const credentialData = {
+                    id: credential.id,
+                    rawId: bufferEncode(credential.rawId),
+                    type: credential.type,
+                    response: {
+                        attestationObject: bufferEncode(credential.response.attestationObject),
+                        clientDataJSON: bufferEncode(credential.response.clientDataJSON)
+                    }
+                };
+                
+                showDebug('Datos de credencial preparados', {
+                    id: credentialData.id.substring(0, 50) + '...',
+                    type: credentialData.type,
+                    rawIdLength: credentialData.rawId.length,
+                    attestationObjectLength: credentialData.response.attestationObject.length,
+                    clientDataJSONLength: credentialData.response.clientDataJSON.length
+                });
+                
+                // ===== PASO 5: Enviar al servidor para verificar =====
+                showStatus('📤 Enviando credencial al servidor...', 'info');
+                
+                const verifyResponse = await fetch('register_verify.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(credentialData)
+                });
+                
+                showDebug('Status de respuesta (verify)', {
+                    status: verifyResponse.status,
+                    statusText: verifyResponse.statusText,
+                    ok: verifyResponse.ok
+                });
+                
+                // Leer respuesta como texto primero
+                const verifyText = await verifyResponse.text();
+                showDebug('Respuesta cruda (verify)', verifyText.substring(0, 1000) + (verifyText.length > 1000 ? '...' : ''));
+                
+                // Intentar parsear JSON
+                let result;
+                try {
+                    result = JSON.parse(verifyText);
+                    showDebug('Resultado parseado', result);
+                } catch (parseError) {
+                    showStatus('❌ Error: El servidor no devolvió JSON válido', 'error');
+                    showDebug('Error parseando verify', parseError.message);
+                    throw new Error('Respuesta del servidor no es JSON válido: ' + parseError.message);
+                }
+                
+                // Mostrar debug del servidor si existe
+                if (result.debug && Array.isArray(result.debug)) {
+                    showDebug('Debug del servidor', result.debug.join('\n'));
+                }
+                
+                // ===== PASO 6: Procesar resultado =====
+                if (result.success) {
+                    showStatus('✅ ¡Registro exitoso! Tu cuenta ha sido creada.', 'success');
+                    
+                    // Opcional: redirigir después de 2 segundos
+                    // setTimeout(() => {
+                    //     window.location.href = 'login.html';
+                    // }, 2000);
+                } else {
+                    showStatus('❌ Error: ' + (result.error || 'Error desconocido'), 'error');
+                }
+                
+            } catch (error) {
+                // Error general
+                showStatus('❌ Error: ' + error.message, 'error');
+                showDebug('Error general capturado', {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                });
+                console.error('Error completo:', error);
+            }
+        });
+    </script>
+</body>
+</html>
