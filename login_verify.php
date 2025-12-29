@@ -182,8 +182,7 @@ try {
     $userRepo->updateCredentialCounter($credential['id'], $counter);
     $debugLog[] = "Counter actualizado a: " . $counter;
     
-    // NOTA: Aquí deberías verificar la firma criptográfica
-    // Por ahora la omitimos para simplificar, pero en producción es CRÍTICO
+    
     $debugLog[] = "⚠️ ADVERTENCIA: Verificación de firma omitida (implementar en producción)";
     
     // Actualizar last_used
